@@ -26,7 +26,7 @@ const TransactionsContainer: React.FC = () => {
       amountRangeFilters={amountRangeFilters as TransactionAmountRangePayload}
       sendFilterEvent={sendFilterEvent}
     />
-  );
+  ); 
 
   return (
     <Switch>
