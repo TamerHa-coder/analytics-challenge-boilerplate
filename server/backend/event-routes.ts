@@ -8,7 +8,7 @@ import {
   getAllSessionsByDateAndHour,
   getReturningUsersAmountInWeekInPercent,
 } from "./database";
-import { Event, weeklyRetentionObject } from "../../client/src/models/event";
+import { Event, GeoLocation, weeklyRetentionObject } from "../../client/src/models/event";
 import { ensureAuthenticated, validateMiddleware } from "./helpers";
 
 import {
@@ -29,7 +29,8 @@ interface Filter {
   offset: number;
 }
 
-export const dateString = (dateNum: number): string => {
+// Gets a date in milliseconds and returns it in yyyy/mm/dd string
+export const convertDateToString = (dateNum: number): string => {
   const date: Date = new Date(dateNum);
   let mm: number = date.getMonth() + 1; // getMonth() is zero-based
   let dd: number = date.getDate();
@@ -37,34 +38,35 @@ export const dateString = (dateNum: number): string => {
   return [date.getFullYear(), (mm > 9 ? "" : "0") + mm, (dd > 9 ? "" : "0") + dd].join("/");
 };
 
+// Gets a date in milliseconds and returns a date in milliseconds that is the beginning of the same day
 const toStartOfTheDay = (date: number): number => {
   return new Date(new Date(date).toDateString()).valueOf();
 };
 
-const daysToMiliSeconds = (days: number): number => {
+// Takes a number of days and converts it to milliseconds.
+const daysToMilliseconds = (days: number): number => {
   return days * 24 * 60 * 60 * 1000;
 };
 
+// Get all events
 router.get("/all", (req: Request, res: Response) => {
   const events: Event[] = getAllEvents();
   res.json(events);
 });
 
+// Get all events by filters
 router.get("/all-filtered", (req: Request, res: Response) => {
   const filters: Filter = req.query;
-  let filtered: any[] = getAllEvents();
+  let filtered: Event[] = getAllEvents();
 
   if (filters.search) {
-    const reg: RegExp = new RegExp(filters.search, "i");
-    filtered = filtered.filter((event) => {
-      let checker = false;
-      for (const key in event) {
-        if (reg.test(event[key])) {
-          checker = true;
-        }
-      }
-      return checker;
-    });
+    const reg = new RegExp(filters.search, "i");
+    filtered = filtered.filter((event: Event) =>
+      Object.values(event).some((value: string | number | GeoLocation) => {
+        if (typeof value === "string" || typeof value === "number")
+          return reg.test(value.toString());
+      })
+    );
   }
 
   if (filters.type) {
@@ -77,56 +79,43 @@ router.get("/all-filtered", (req: Request, res: Response) => {
 
   if (filters.sorting) {
     filtered.sort((firstEvent: Event, secondEvent: Event) =>
-      filters.sorting === "+date"
+      filters.sorting !== "-date"
         ? firstEvent.date - secondEvent.date
         : secondEvent.date - firstEvent.date
     );
   }
 
-  const more = () => {
-    if (!filters.offset) {
-      return false;
-    }
-    if (filters.offset < filtered.length) {
-      return true;
-    }
-    return false;
-  };
-
   res.json({
     events: filtered.slice(0, filters.offset || filtered.length),
-    more: more(),
+    more: !filters.offset ? false : filters.offset < filtered.length ? true : false,
   });
 });
 
-router.get("/today", (req: Request, res: Response) => {
-  res.send("/today");
-});
-
-router.get("/week", (req: Request, res: Response) => {
-  res.send("/week");
-});
-
+// Returns a count of unique sessions for the relevant day, grouped by days, for one week (offset is the number of days to go back from today).
 router.get("/by-days/:offset", (req: Request, res: Response) => {
   const events: Event[] = getAllEvents();
   const offset: number = +req.params.offset;
-  let startDate: number = new Date().valueOf() - daysToMiliSeconds(offset - 1);
+  let startDate: number = new Date().valueOf() - daysToMilliseconds(offset - 1);
   const day: number = new Date(startDate).getDate();
   const month: number = new Date(startDate).getMonth() + 1;
   const year: number = new Date(startDate).getFullYear();
   startDate = new Date(`${year}/${month}/${day}`).valueOf();
-  const endDate: number = startDate - daysToMiliSeconds(7);
+  const endDate: number = startDate - daysToMilliseconds(7);
 
   let filtered: Event[] = events.filter((event) => endDate <= event.date && startDate > event.date);
 
-  let result: any = {};
+  let result: { [key: string]: string[] } = {};
   for (let event of filtered) {
-    if (result[dateString(event.date)]) {
-      if (!result[dateString(event.date)].some((session: string) => session === event.session_id)) {
-        result[dateString(event.date)].push(event.session_id);
+    if (result[convertDateToString(event.date)]) {
+      if (
+        !result[convertDateToString(event.date)].some(
+          (session: string) => session === event.session_id
+        )
+      ) {
+        result[convertDateToString(event.date)].push(event.session_id);
       }
     } else {
-      result[dateString(event.date)] = [event.session_id];
+      result[convertDateToString(event.date)] = [event.session_id];
     }
   }
   let arrResult: Array<{ date: string; count: number }> = [];
@@ -138,14 +127,21 @@ router.get("/by-days/:offset", (req: Request, res: Response) => {
     };
     i++;
   }
-  res.json(arrResult);
+
+  res.json(
+    arrResult.sort(
+      (item1: { date: string; count: number }, item2: { date: string; count: number }) =>
+        new Date(item1.date).valueOf() - new Date(item2.date).valueOf()
+    )
+  );
 });
 
+// Returns a count of unique sessions for the relevant hour, grouped by hour, for one day (offset is the number of days to go back from today).
 router.get("/by-hours/:offset", (req: Request, res: Response) => {
   const offset: number = +req.params.offset;
   let date: number = new Date().valueOf();
   if (offset > 0) {
-    date -= daysToMiliSeconds(offset);
+    date -= daysToMilliseconds(offset);
   }
   let sessionsByHours: Array<{ hour: string; count: number }> = [];
 
@@ -160,6 +156,7 @@ router.get("/by-hours/:offset", (req: Request, res: Response) => {
   res.json(sessionsByHours);
 });
 
+// Returns an array of objects with User retention Information for every week since dayZero
 router.get("/retention", (req: Request, res: Response) => {
   const dayZero = +req.query.dayZero;
   const events: Event[] = getAllEvents();
@@ -167,10 +164,10 @@ router.get("/retention", (req: Request, res: Response) => {
   const retentionCohort = [];
   let startingDate: number = toStartOfTheDay(dayZero);
   let weekNumber = 1;
-  const currentDate: number = toStartOfTheDay(new Date().valueOf()) + daysToMiliSeconds(1);
+  const currentDate: number = toStartOfTheDay(new Date().valueOf()) + daysToMilliseconds(1);
 
   const getOneWeek = (startDate: number, week: number): weeklyRetentionObject => {
-    let endDate = startDate + daysToMiliSeconds(7);
+    let endDate = startDate + daysToMilliseconds(7);
     const startingIds: string[] = events
       .filter(
         (event: Event) => event.name === "signup" && event.date >= startDate && event.date < endDate
@@ -178,31 +175,31 @@ router.get("/retention", (req: Request, res: Response) => {
       .map((event: Event): string => event.distinct_user_id);
     const startAndEndDates: number[] = [startDate, endDate];
     startDate = endDate;
-    endDate += daysToMiliSeconds(7);
+    endDate += daysToMilliseconds(7);
 
     const oneWeekResult: number[] = [100];
 
     while (startDate < currentDate) {
       oneWeekResult.push(getReturningUsersAmountInWeekInPercent(startDate, endDate, startingIds));
       startDate = endDate;
-      endDate += daysToMiliSeconds(7);
+      endDate += daysToMilliseconds(7);
     }
 
     const weekObj: weeklyRetentionObject = {
       registrationWeek: week,
       newUsers: startingIds.length,
       weeklyRetention: oneWeekResult,
-      start: dateString(startAndEndDates[0]),
-      end: dateString(startAndEndDates[1]),
+      start: convertDateToString(startAndEndDates[0]),
+      end: convertDateToString(startAndEndDates[1]),
     };
     return weekObj;
   };
   let check = false;
   while (startingDate < currentDate) {
     if (
-      new Date(startingDate + daysToMiliSeconds(7)).getDate() >= 25 &&
+      new Date(startingDate + daysToMilliseconds(7)).getDate() >= 25 &&
       !check &&
-      new Date(startingDate + daysToMiliSeconds(7)).getMonth() === 9
+      new Date(startingDate + daysToMilliseconds(7)).getMonth() === 9
     ) {
       check = true;
       startingDate += +3600000;
@@ -211,25 +208,17 @@ router.get("/retention", (req: Request, res: Response) => {
     if (
       new Date(startingDate).getDate() <= 25 &&
       !check &&
-      new Date(startingDate + daysToMiliSeconds(7)).getDate() >= 25
+      new Date(startingDate + daysToMilliseconds(7)).getDate() >= 25
     ) {
       check = true;
-      startingDate += daysToMiliSeconds(7) + 3600000;
+      startingDate += daysToMilliseconds(7) + 3600000;
     } else {
-      startingDate += daysToMiliSeconds(7);
+      startingDate += daysToMilliseconds(7);
     }
     weekNumber++;
   }
 
   res.json(retentionCohort);
-});
-
-router.get("/today", (req: Request, res: Response) => {
-  res.send("/today");
-});
-
-router.get("/week", (req: Request, res: Response) => {
-  res.send("/week");
 });
 
 router.post("/", (req: Request, res: Response) => {
@@ -240,22 +229,6 @@ router.post("/", (req: Request, res: Response) => {
   } catch (error) {
     res.json({ message: error.message });
   }
-});
-
-router.get("/chart/os/:time", (req: Request, res: Response) => {
-  res.send("/chart/os/:time");
-});
-
-router.get("/chart/pageview/:time", (req: Request, res: Response) => {
-  res.send("/chart/pageview/:time");
-});
-
-router.get("/chart/timeonurl/:time", (req: Request, res: Response) => {
-  res.send("/chart/timeonurl/:time");
-});
-
-router.get("/chart/geolocation/:time", (req: Request, res: Response) => {
-  res.send("/chart/geolocation/:time");
 });
 
 export default router;
