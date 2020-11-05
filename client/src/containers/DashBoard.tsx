@@ -19,17 +19,17 @@ const DashBoard: React.FC = () => {
       <H1>Analytics DashBoard</H1>
       <Grid>
         <ErrorBoundary>
-          <GoogleMapsTile />
-        </ErrorBoundary>
-        <ErrorBoundary>
           <SessionsByDay />
         </ErrorBoundary>
         <ErrorBoundary>
           <SessionsByHours />
         </ErrorBoundary>
         <ErrorBoundary>
+          <GoogleMapsTile />
+        </ErrorBoundary>  
+        <ErrorBoundary>
           <RetentionTable />
-        </ErrorBoundary>
+        </ErrorBoundary> 
         <EventLogWrapper>
           <ErrorBoundary>
             <EventLog />
